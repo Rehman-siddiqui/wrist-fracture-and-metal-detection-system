@@ -130,7 +130,10 @@ const ChatbotPopup: React.FC = () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${import.meta.env.VITE_GROQ_API_KEY ?? ""}`, // set VITE_GROQ_API_KEY in your .env
+            // .trim() guards against a trailing newline/space in the env value,
+            // which would otherwise make the header invalid ("Failed to execute
+            // 'fetch' on 'Window': Invalid value").
+            "Authorization": `Bearer ${(import.meta.env.VITE_GROQ_API_KEY ?? "").trim()}`,
           },
           body: JSON.stringify({
             model: "llama-3.3-70b-versatile",
