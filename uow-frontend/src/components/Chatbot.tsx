@@ -130,10 +130,10 @@ const ChatbotPopup: React.FC = () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            // .trim() guards against a trailing newline/space in the env value,
-            // which would otherwise make the header invalid ("Failed to execute
-            // 'fetch' on 'Window': Invalid value").
-            "Authorization": `Bearer ${(import.meta.env.VITE_GROQ_API_KEY ?? "").trim()}`,
+            // Strip ALL whitespace (incl. newlines anywhere in the value) so a
+            // key pasted with a stray space/line-break can't make the header
+            // invalid ("Failed to execute 'fetch' on 'Window': Invalid value").
+            "Authorization": `Bearer ${(import.meta.env.VITE_GROQ_API_KEY ?? "").replace(/\s+/g, "")}`,
           },
           body: JSON.stringify({
             model: "llama-3.3-70b-versatile",
