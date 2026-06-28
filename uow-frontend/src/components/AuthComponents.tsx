@@ -454,7 +454,6 @@ export const SignUp: React.FC = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(signupData),
-        credentials: "include"
       });
   
       if (!response.ok) {
