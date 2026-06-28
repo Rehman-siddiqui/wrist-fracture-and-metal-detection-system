@@ -32,7 +32,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5432/uow")
-engine = create_engine(DATABASE_URL)
+# pool_pre_ping + pool_recycle keep the app resilient to Neon (serverless Postgres)
+# closing idle connections when it auto-suspends; without these the first request
+# after an idle period fails with "SSL connection has been closed unexpectedly".
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
