@@ -776,27 +776,65 @@ def get_admin_endpoints(get_db, get_current_user, get_password_hash, User, Clien
     ):
         """List all analyses"""
         query = db.query(AnalysisHistory)
-        
+
         if user_id:
             query = query.filter(AnalysisHistory.user_id == user_id)
         if hospital_id:
-            query = query.filter(AnalysisHistory.hospital_id == hospital_id)
+            # Hospital-wise: include analyses tagged with this hospital AND analyses
+            # made by users tied to it (its staff + its assigned clients), so a
+            # client's uploads show under their hospital too.
+            assigned_profile_ids = [
+                hc.client_id for hc in db.query(HospitalClient).filter(
+                    HospitalClient.hospital_id == hospital_id,
+                    HospitalClient.is_active == True,
+                ).all()
+            ]
+            client_user_ids = [
+                cp.user_id for cp in db.query(ClientProfile).filter(
+                    ClientProfile.id.in_(assigned_profile_ids)
+                ).all()
+            ] if assigned_profile_ids else []
+            staff_user_ids = [
+                hs.user_id for hs in db.query(HospitalStaff).filter(
+                    HospitalStaff.hospital_id == hospital_id
+                ).all()
+            ]
+            related_user_ids = list(set(client_user_ids + staff_user_ids))
+            conditions = [AnalysisHistory.hospital_id == hospital_id]
+            if related_user_ids:
+                conditions.append(AnalysisHistory.user_id.in_(related_user_ids))
+            query = query.filter(or_(*conditions))
         if image_type:
             query = query.filter(AnalysisHistory.image_type == image_type)
-        
+
         analyses = query.order_by(AnalysisHistory.created_at.desc()).offset(skip).limit(limit).all()
-        
+
         result = []
         for a in analyses:
             user = db.query(User).filter(User.id == a.user_id).first()
+            hospital_name = None
+            if a.hospital_id:
+                h = db.query(HospitalEntity).filter(HospitalEntity.id == a.hospital_id).first()
+                hospital_name = h.name if h else None
+            # The report PDF is written next to the processed image, so its path
+            # is derivable without an extra DB column.
+            report_filename = None
+            if a.processed_filename:
+                report_filename = a.processed_filename.replace("_processed.png", "_report.pdf")
             result.append({
                 "id": a.id,
                 "user_id": a.user_id,
                 "user_name": user.name if user else None,
                 "user_email": user.email if user else None,
+                "hospital_id": a.hospital_id,
+                "hospital_name": hospital_name,
                 "image_type": a.image_type,
                 "original_filename": a.original_filename,
-                "created_at": a.created_at
+                "processed_filename": a.processed_filename,
+                "report_filename": report_filename,
+                "detections": a.detections,
+                # Stored as UTC; append 'Z' so the browser renders correct local time.
+                "created_at": (a.created_at.isoformat() + "Z") if a.created_at else None,
             })
-        
+
         return result

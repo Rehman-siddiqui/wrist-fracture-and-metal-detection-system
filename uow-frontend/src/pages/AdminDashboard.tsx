@@ -4,7 +4,8 @@ import { useNavigate } from "react-router-dom";
 import {
   Users, Building2, Activity, Settings, Search, Plus, Edit2, Trash2,
   UserPlus, Shield, X, Check, AlertCircle, ChevronDown, LogOut,
-  RefreshCw, Eye, Key, UserMinus, Link2, Unlink
+  RefreshCw, Eye, Key, UserMinus, Link2, Unlink,
+  FileText, Download, MessageSquare, Upload, Mail
 } from "lucide-react";
 
 // Types
@@ -67,7 +68,52 @@ interface ClientWithAssignments {
   assigned_hospitals: AssignedHospital[];
 }
 
+interface AnalysisRecord {
+  id: number;
+  user_id: number;
+  user_name: string | null;
+  user_email: string | null;
+  hospital_id: number | null;
+  hospital_name: string | null;
+  image_type: string;
+  original_filename: string;
+  processed_filename: string | null;
+  report_filename: string | null;
+  detections: string | null;
+  created_at: string | null;
+}
+
+interface ContactMessageItem {
+  id: number;
+  name: string;
+  email: string;
+  organization: string | null;
+  reason: string | null;
+  message: string;
+  is_read: boolean;
+  created_at: string | null;
+}
+
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
+// Render a stored UTC timestamp in the viewer's local date/time.
+const formatDateTime = (s?: string | null): string => {
+  if (!s) return "—";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleString();
+};
+
+// AnalysisHistory.detections is stored as a JSON string; parse it safely.
+const parseDetections = (s?: string | null): Array<{ class_name: string; confidence: number }> => {
+  if (!s) return [];
+  try {
+    const arr = JSON.parse(s);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+};
 
 // Turn a FastAPI error body into a plain string. FastAPI returns `detail` as a
 // STRING for HTTPExceptions but as an ARRAY of objects for 422 validation
@@ -90,7 +136,7 @@ const extractErrorMessage = (data: any, fallback: string): string => {
 
 const AdminDashboard: React.FC = () => {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<"overview" | "users" | "hospitals" | "assignments">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "users" | "hospitals" | "assignments" | "analyze" | "analyses" | "messages">("overview");
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
@@ -115,6 +161,19 @@ const AdminDashboard: React.FC = () => {
   const [selectedClient, setSelectedClient] = useState<UnassignedClient | null>(null);
   const [selectedClientForReassign, setSelectedClientForReassign] = useState<ClientWithAssignments | null>(null);
   const [selectedAssignment, setSelectedAssignment] = useState<AssignedHospital | null>(null);
+
+  // Analyses viewer
+  const [analyses, setAnalyses] = useState<AnalysisRecord[]>([]);
+  const [analysisHospitalFilter, setAnalysisHospitalFilter] = useState<string>("");
+  const [analysisUserFilter, setAnalysisUserFilter] = useState<string>("");
+
+  // Contact messages
+  const [messages, setMessages] = useState<ContactMessageItem[]>([]);
+
+  // Admin "Analyze X-Ray" tab
+  const [analyzeProcessing, setAnalyzeProcessing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [analyzeResult, setAnalyzeResult] = useState<any | null>(null);
 
   const token = localStorage.getItem("token");
 
@@ -161,6 +220,75 @@ const AdminDashboard: React.FC = () => {
   useEffect(() => {
     loadDashboardData();
   }, [roleFilter, searchQuery, assignmentSearchQuery, hospitalFilter]);
+
+  const loadAnalyses = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (analysisHospitalFilter) params.append("hospital_id", analysisHospitalFilter);
+      if (analysisUserFilter) params.append("user_id", analysisUserFilter);
+      const res = await fetchWithAuth(`${API_BASE}/admin/analyses?${params.toString()}`);
+      if (res.ok) setAnalyses(await res.json());
+    } catch {
+      /* non-fatal */
+    }
+  };
+
+  const loadMessages = async () => {
+    try {
+      const res = await fetchWithAuth(`${API_BASE}/contacts`);
+      if (res.ok) setMessages(await res.json());
+    } catch {
+      /* non-fatal */
+    }
+  };
+
+  useEffect(() => {
+    loadMessages();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    loadAnalyses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisHospitalFilter, analysisUserFilter]);
+
+  const handleAdminAnalyze = async (file: File) => {
+    setAnalyzeError(null);
+    setAnalyzeResult(null);
+    setAnalyzeProcessing(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${API_BASE}/xray/`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(extractErrorMessage(data, "Analysis failed"));
+      setAnalyzeResult(data);
+
+      // Record the analysis so the dashboard "Total Analyses" count increments.
+      const rd = new FormData();
+      rd.append("image_type", "xray");
+      rd.append("original_filename", file.name);
+      if (data.processed_image_url) rd.append("processed_filename", data.processed_image_url);
+      rd.append("detections", JSON.stringify(data.detections || []));
+      await fetch(`${API_BASE}/analysis/record`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: rd,
+      });
+
+      // Refresh stats + the analyses list so both reflect the new analysis.
+      loadDashboardData();
+      loadAnalyses();
+    } catch (err: any) {
+      setAnalyzeError(err?.message || "Analysis failed");
+    } finally {
+      setAnalyzeProcessing(false);
+    }
+  };
 
   const handleLogout = () => {
     localStorage.removeItem("token");
@@ -305,9 +433,12 @@ const AdminDashboard: React.FC = () => {
           <div className="flex gap-1 overflow-x-auto py-2">
             {[
               { id: "overview", label: "Overview", icon: Activity },
+              { id: "analyze", label: "Analyze X-Ray", icon: Upload },
+              { id: "analyses", label: "Analyses", icon: FileText },
               { id: "users", label: "Users", icon: Users },
               { id: "hospitals", label: "Hospitals", icon: Building2 },
               { id: "assignments", label: "Assignments", icon: Link2 },
+              { id: "messages", label: "Messages", icon: MessageSquare },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -794,6 +925,232 @@ const AdminDashboard: React.FC = () => {
                     </div>
                   )}
                 </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Analyze X-Ray Tab */}
+          {activeTab === "analyze" && (
+            <motion.div
+              key="analyze"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+            >
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-slate-700/50 p-6">
+                  <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                    <Upload className="w-5 h-5 text-purple-400" /> Analyze a Wrist X-Ray
+                  </h3>
+                  <label className="block border-2 border-dashed border-slate-600 rounded-xl p-8 text-center cursor-pointer hover:border-purple-500 transition-colors">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      disabled={analyzeProcessing}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleAdminAnalyze(f);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                    <Upload className="w-10 h-10 text-slate-500 mx-auto mb-3" />
+                    <p className="text-slate-300 font-medium">Click to upload an X-ray image</p>
+                    <p className="text-slate-500 text-sm mt-1">PNG, JPG (max 25MB)</p>
+                  </label>
+                  {analyzeProcessing && (
+                    <div className="mt-4 flex items-center gap-3 text-purple-300">
+                      <RefreshCw className="w-5 h-5 animate-spin" /> Analyzing image...
+                    </div>
+                  )}
+                  {analyzeError && (
+                    <div className="mt-4 p-3 bg-red-500/20 border border-red-500/30 rounded-xl text-red-300 text-sm">
+                      {analyzeError}
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-slate-700/50 p-6">
+                  <h3 className="text-lg font-semibold text-white mb-4">Result</h3>
+                  {analyzeResult ? (
+                    <div className="space-y-4">
+                      <img
+                        src={`${API_BASE}/xray/download/${analyzeResult.processed_image_url}`}
+                        alt="Processed X-Ray"
+                        className="w-full rounded-xl border border-slate-700"
+                      />
+                      <div className="space-y-2">
+                        {(analyzeResult.detections || []).filter((d: any) => d.class_name !== "text").length === 0 ? (
+                          <p className="text-green-400">No abnormalities detected.</p>
+                        ) : (
+                          (analyzeResult.detections || [])
+                            .filter((d: any) => d.class_name !== "text")
+                            .map((d: any, i: number) => (
+                              <div key={i} className="flex justify-between text-sm bg-slate-900/50 px-3 py-2 rounded-lg">
+                                <span className="capitalize text-white">{d.class_name}</span>
+                                <span className="text-purple-300">{(d.confidence * 100).toFixed(1)}%</span>
+                              </div>
+                            ))
+                        )}
+                      </div>
+                      <a
+                        href={`${API_BASE}/xray/download/${analyzeResult.report_url || analyzeResult.processed_image_url}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-purple-500/20 text-purple-300 rounded-lg hover:bg-purple-500/30 transition-colors"
+                      >
+                        <Download className="w-4 h-4" /> Download Report
+                      </a>
+                    </div>
+                  ) : (
+                    <p className="text-slate-500 text-sm">Upload an X-ray to see results here.</p>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* All Analyses Tab */}
+          {activeTab === "analyses" && (
+            <motion.div
+              key="analyses"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+            >
+              <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-slate-700/50 p-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                  <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-purple-400" /> All Analyses ({analyses.length})
+                  </h3>
+                  <div className="flex flex-wrap gap-3">
+                    <select
+                      value={analysisHospitalFilter}
+                      onChange={(e) => setAnalysisHospitalFilter(e.target.value)}
+                      className="px-3 py-2 bg-slate-900/50 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500"
+                    >
+                      <option value="">All Hospitals</option>
+                      {hospitals.map((h) => (
+                        <option key={h.id} value={h.id}>{h.name}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={analysisUserFilter}
+                      onChange={(e) => setAnalysisUserFilter(e.target.value)}
+                      className="px-3 py-2 bg-slate-900/50 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500"
+                    >
+                      <option value="">All Patients / Users</option>
+                      {users.map((u) => (
+                        <option key={u.id} value={u.id}>{u.name || u.email}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {analyses.length === 0 ? (
+                  <div className="p-12 text-center">
+                    <FileText className="w-10 h-10 text-slate-500 mx-auto mb-3" />
+                    <p className="text-slate-400">No analyses found</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {analyses.map((a) => {
+                      const dets = parseDetections(a.detections).filter((d) => d.class_name !== "text");
+                      return (
+                        <div key={a.id} className="bg-slate-900/40 rounded-xl border border-slate-700/40 p-4 flex flex-col lg:flex-row lg:items-center gap-4">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-white font-medium truncate">{a.user_name || a.user_email || "Unknown"}</p>
+                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400 mt-1">
+                              <span>Hospital: {a.hospital_name || "—"}</span>
+                              <span className="truncate max-w-[14rem]">File: {a.original_filename}</span>
+                              <span>{formatDateTime(a.created_at)}</span>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {dets.length === 0 ? (
+                              <span className="text-green-400 text-xs">No findings</span>
+                            ) : (
+                              dets.map((d, i) => (
+                                <span key={i} className="text-xs px-2 py-1 bg-amber-500/20 text-amber-300 rounded-full capitalize">
+                                  {d.class_name} {(d.confidence * 100).toFixed(0)}%
+                                </span>
+                              ))
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {a.processed_filename && (
+                              <a
+                                href={`${API_BASE}/xray/download/${a.processed_filename}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-2 bg-slate-700/50 rounded-lg text-slate-300 hover:text-white transition-colors"
+                                title="View processed image"
+                              >
+                                <Eye className="w-4 h-4" />
+                              </a>
+                            )}
+                            {a.report_filename && (
+                              <a
+                                href={`${API_BASE}/xray/download/${a.report_filename}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-2 bg-purple-500/20 rounded-lg text-purple-300 hover:bg-purple-500/30 transition-colors"
+                                title="Download report"
+                              >
+                                <Download className="w-4 h-4" />
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+
+          {/* Contact Messages Tab */}
+          {activeTab === "messages" && (
+            <motion.div
+              key="messages"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+            >
+              <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-slate-700/50 p-6">
+                <h3 className="text-lg font-semibold text-white mb-6 flex items-center gap-2">
+                  <MessageSquare className="w-5 h-5 text-purple-400" /> Contact Messages ({messages.length})
+                </h3>
+                {messages.length === 0 ? (
+                  <div className="p-12 text-center">
+                    <Mail className="w-10 h-10 text-slate-500 mx-auto mb-3" />
+                    <p className="text-slate-400">No messages yet</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {messages.map((m) => (
+                      <div key={m.id} className="bg-slate-900/40 rounded-xl border border-slate-700/40 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                          <div>
+                            <span className="text-white font-medium">{m.name}</span>
+                            <a href={`mailto:${m.email}`} className="text-purple-300 text-sm ml-2">{m.email}</a>
+                          </div>
+                          <span className="text-slate-500 text-xs">{formatDateTime(m.created_at)}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 mb-2 text-xs">
+                          {m.organization && (
+                            <span className="px-2 py-1 bg-slate-700/50 rounded-full text-slate-300">{m.organization}</span>
+                          )}
+                          {m.reason && (
+                            <span className="px-2 py-1 bg-teal-500/20 rounded-full text-teal-300 capitalize">{m.reason}</span>
+                          )}
+                        </div>
+                        <p className="text-slate-300 text-sm whitespace-pre-wrap">{m.message}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </motion.div>
           )}

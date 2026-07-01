@@ -13,6 +13,9 @@ import {
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 
+// Backend API base URL — configurable via VITE_API_URL for deployment.
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
 const contactReasons = [
   { value: "demo", label: "Request a Demo" },
   { value: "feedback", label: "Feedback & Suggestions" },
@@ -31,6 +34,7 @@ const Contact: FunctionComponent = () => {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [error, setError] = useState("");
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setFormData(prev => ({
@@ -41,13 +45,26 @@ const Contact: FunctionComponent = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError("");
     setIsSubmitting(true);
-    
-    // Simulate form submission
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    setIsSubmitting(false);
-    setIsSubmitted(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/contact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(formData),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const detail = data?.detail;
+        throw new Error(typeof detail === "string" ? detail : "Failed to send message");
+      }
+      setIsSubmitted(true);
+    } catch (err: any) {
+      setError(err?.message || "Could not send your message. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -200,6 +217,12 @@ const Contact: FunctionComponent = () => {
                         placeholder="Tell us what's on your mind..."
                       />
                     </div>
+
+                    {error && (
+                      <div className="p-3 bg-red-500/20 border border-red-500/30 rounded-xl text-red-300 text-sm">
+                        {error}
+                      </div>
+                    )}
 
                     <motion.button
                       type="submit"

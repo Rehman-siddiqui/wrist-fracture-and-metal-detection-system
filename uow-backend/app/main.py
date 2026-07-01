@@ -183,6 +183,20 @@ class AnalysisHistory(Base):
     notes = Column(Text, nullable=True)
 
 
+class ContactMessage(Base):
+    """Messages submitted through the public Contact form."""
+    __tablename__ = "contact_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=False)
+    organization = Column(String(255), nullable=True)
+    reason = Column(String(100), nullable=True)
+    message = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ============ Create Tables ============
 
 Base.metadata.create_all(bind=engine)
@@ -613,6 +627,62 @@ def get_hospitals_list(db: Session = Depends(get_db)):
             "code": h.code
         }
         for h in hospitals
+    ]
+
+
+# ============ Contact Form ============
+
+class ContactInput(BaseModel):
+    name: str
+    email: EmailStr
+    organization: Optional[str] = None
+    reason: Optional[str] = None
+    message: str
+
+
+@app.post("/contact")
+def submit_contact(data: ContactInput, db: Session = Depends(get_db)):
+    """Public endpoint: store a message submitted through the Contact form."""
+    name = (data.name or "").strip()
+    message = (data.message or "").strip()
+    if not name or not message:
+        raise HTTPException(status_code=400, detail="Name and message are required")
+
+    entry = ContactMessage(
+        name=name,
+        email=data.email,
+        organization=(data.organization or "").strip() or None,
+        reason=(data.reason or "").strip() or None,
+        message=message,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return {"message": "Message received", "id": entry.id}
+
+
+@app.get("/contacts")
+def list_contacts(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Admin-only: list submitted contact messages (newest first)."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    rows = db.query(ContactMessage).order_by(ContactMessage.created_at.desc()).all()
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "email": r.email,
+            "organization": r.organization,
+            "reason": r.reason,
+            "message": r.message,
+            "is_read": r.is_read,
+            # Stored as UTC; append 'Z' so the browser renders correct local time.
+            "created_at": (r.created_at.isoformat() + "Z") if r.created_at else None,
+        }
+        for r in rows
     ]
 
 
